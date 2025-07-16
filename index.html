@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Movement Summary (Pure Python)</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js"></script>
+<style>
+    body { font-family: Arial, sans-serif; padding: 2em; }
+    #csv-output { white-space: pre-wrap; background: #f4f4f4; padding: 1em; border: 1px solid #ccc; margin-top: 1em; }
+    #csv-download { display: none; margin-top: 1em; }
+  </style>
+</head>
+<body>
+<h2>📄 Movement PDF → CSV</h2>
+<input accept="application/pdf" id="file-input" type="file"/>
+<button id="process-btn">Generate CSV</button>
+<pre id="csv-output">Waiting for file...</pre>
+<a download="Processed-Movement-Records.csv" id="csv-download">⬇️ Download CSV</a>
+<script type="module">
+  const pyodide = await loadPyodide();
+
+  document.getElementById('process-btn').onclick = async () => {
+    const file = document.getElementById('file-input').files[0];
+    const output = document.getElementById('csv-output');
+    const download = document.getElementById('csv-download');
+    if (!file) return alert("Please select a PDF");
+
+    output.textContent = "⏳ Extracting text...";
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const typedArray = new Uint8Array(reader.result);
+      const pdf = await pdfjsLib.getDocument({ data: typedArray }).promise;
+      let text = "";
+
+      for (let i = 0; i < pdf.numPages; i++) {
+        const page = await pdf.getPage(i + 1);
+        const content = await page.getTextContent();
+        text += content.items.map(i => i.str).join(" ") + "\n";
+      }
+
+      pyodide.FS.writeFile("raw.txt", text);
+      const csv = await pyodide.runPythonAsync("\nimport re\nfrom datetime import datetime\n\nwith open(\"raw.txt\", \"r\", encoding=\"utf-8\") as f:\n    raw = f.read()\n\npattern = re.compile(r\"(ARR|DEP) Date: (\\d{2}/\\d{2}/\\d{4}).*?Vessel:\\s+([A-Z0-9]+)\")\nentries = pattern.findall(raw)\n\nrecords = []\nfor kind, date_str, flight in entries:\n    date = datetime.strptime(date_str, \"%d/%m/%Y\")\n    records.append({\"type\": kind, \"date\": date, \"flight\": flight})\n\nrecords.sort(key=lambda r: r[\"date\"])\n\nrows = []\ni = 0\nwhile i < len(records):\n    if records[i][\"type\"] == \"ARR\":\n        arr = records[i]\n        dep = records[i+1] if i+1 < len(records) and records[i+1][\"type\"] == \"DEP\" else None\n        arr_date = arr[\"date\"]\n        dep_date = dep[\"date\"] if dep else None\n        arr_flight = arr[\"flight\"]\n        dep_flight = dep[\"flight\"] if dep else \"\"\n        days_in = (dep_date - arr_date).days + 1 if dep else \"\"\n        prev_dep = rows[-1][\"Dep Date\"] if rows else None\n        days_out = (arr_date - datetime.strptime(prev_dep, \"%d/%m/%Y\")).days + 1 if prev_dep else \"\"\n        rows.append({\n            \"Arr Date\": arr_date.strftime(\"%d/%m/%Y\"),\n            \"Dep Date\": dep_date.strftime(\"%d/%m/%Y\") if dep_date else \"\",\n            \"Arr Flight\": arr_flight,\n            \"Dep Flight\": dep_flight,\n            \"Days in Australia\": str(days_in),\n            \"Days Overseas\": str(days_out)\n        })\n        if dep: i += 1\n    i += 1\n\ntotal_in = sum(int(r[\"Days in Australia\"]) for r in rows if r[\"Days in Australia\"].isdigit())\ntotal_out = sum(int(r[\"Days Overseas\"]) for r in rows if r[\"Days Overseas\"].isdigit())\nrows.append({\n    \"Arr Date\": \"\",\n    \"Dep Date\": \"\",\n    \"Arr Flight\": \"\",\n    \"Dep Flight\": \"TOTAL\",\n    \"Days in Australia\": str(total_in),\n    \"Days Overseas\": str(total_out)\n})\n\nheaders = [\"Arr Date\", \"Dep Date\", \"Arr Flight\", \"Dep Flight\", \"Days in Australia\", \"Days Overseas\"]\ncsv = \",\".join(headers) + \"\\n\"\nfor row in rows:\n    csv += \",\".join(row[h] for h in headers) + \"\\n\"\n\ncsv\n");
+      
+      output.textContent = "";
+      const table = document.createElement("table");
+      table.style.borderCollapse = "collapse";
+      table.style.marginTop = "1em";
+      table.style.fontSize = "0.9em";
+      const rows = csv.trim().split("\n").map(row => row.split(","));
+      rows.forEach((r, i) => {
+        const tr = document.createElement("tr");
+        r.forEach(cell => {
+          const el = document.createElement(i === 0 ? "th" : "td");
+          el.textContent = cell;
+          el.style.border = "1px solid #ccc";
+          el.style.padding = "6px 12px";
+          el.style.background = i === 0 ? "#f0f0f0" : "#fff";
+          tr.appendChild(el);
+        });
+        table.appendChild(tr);
+      });
+      document.getElementById("csv-output").appendChild(table);
+    
+
+      const blob = new Blob([csv], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      download.href = url;
+      download.style.display = "inline-block";
+    };
+
+    reader.readAsArrayBuffer(file);
+  };
+</script>
+</body>
+</html>
